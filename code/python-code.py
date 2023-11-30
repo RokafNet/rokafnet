@@ -199,7 +199,7 @@ optimizer = AdamW(model.parameters(), lr=1e-5)
 scheduler = get_cosine_with_hard_restarts_schedule_with_warmup(optimizer = optimizer,
                                             num_warmup_steps=500,
                                             num_cycles = 2,
-                                            num_training_steps=6800)
+                                            num_training_steps=5100)
 optimizers = (optimizer, scheduler)
 
 trainer = Seq2SeqTrainer(
