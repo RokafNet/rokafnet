@@ -1,1 +1,4 @@
 dataset_file/*
+*.arrow
+*.csv
+wandb/
