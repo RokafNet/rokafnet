@@ -1,3 +1,212 @@
+# %% [markdown]
+# ## Import Modules
+
+# %%
+import pandas as pd
+from glob import glob
+import IPython.display as ipd
+
+# %%
+import numpy as np
+import random
+import os
+import torch
+
+from scipy.io import wavfile
+import noisereduce as nr
+
+# %% [markdown]
+# ## Fix Seed
+
+# %%
+def seed_everything(seed: int = 42):
+    random.seed(seed)
+    np.random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)  # type: ignore
+    torch.backends.cudnn.deterministic = True  # type: ignore
+    torch.backends.cudnn.benchmark = True  # type: ignore
+seed_everything()
+
+# %% [markdown]
+# ## Config
+
+# %%
+CFG = {
+    'model': 'openai/whisper-tiny',
+    'sr': 16000,
+    'noise_file_path': '../files/noise.wav'
+}
+
+# %% [markdown]
+# ## Read Files
+
+# %%
+TRAIN_PATH = '/mnt/elice/dataset/train/'
+TEST_PATH = '/mnt/elice/dataset/test/'
+
+# %%
+df = pd.read_csv(f'{TRAIN_PATH}/texts.csv', index_col=False)
+submission = pd.read_csv(f'sample_submission.csv', index_col=False)
+
+# %% [markdown]
+# ## Data Cleaning
+
+# %%
+import re
+
+def clean_text(text, remove_space=True):
+    text = re.sub(r'[!"#$%&\'()*+,-./:;<=>?@\[\]^_\`{|}~\\\\]','', text)
+    if remove_space:
+        text = ''.join(text.split())
+    return text
+
+# %%
+# Label Cleaning (remove punctuations)
+df['text'] = df['text'].apply(lambda x: clean_text(x, False))
+
+# remove outlier data
+df = df[df['filenames'] != 'audio_5497.wav']
+
+if not os.path.exists('preprocess'):
+    os.mkdir('preprocess')
+
+df.to_csv('preprocess/clean_df.csv', index=False)
+
+# %% [markdown]
+# ## Split long/short dataframe
+
+# %%
+import librosa
+import pandas as pd
+from tqdm.auto import tqdm
+
+def split_dataframe(df, df_name, is_train=True):
+    df_long = []
+    df_short = []
+
+    for idx, row in tqdm(df.iterrows()):
+        if is_train:
+            path = TRAIN_PATH + row['filenames']
+        else:
+            path = row['path']
+        wav, fs = librosa.load(path)
+        length = len(wav)/fs
+
+        if length >= 30:
+            df_long.append(row)
+        else:
+            df_short.append(row)
+
+    df_long = pd.DataFrame(df_long, columns=df.columns)
+    df_short = pd.DataFrame(df_short, columns=df.columns)
+
+    df_long.to_csv(f'preprocess/long_{df_name}.csv', index=False)
+    df_short.to_csv(f'preprocess/short_{df_name}.csv', index=False)
+
+# %%
+split_dataframe(df, 'df')
+split_dataframe(submission, 'test', False)
+
+# %% [markdown]
+# ## Data Preprocess & Train Dataset
+
+# %%
+from transformers import WhisperTokenizer,  WhisperFeatureExtractor
+from transformers import WhisperProcessor
+from scipy.io import wavfile
+
+# load feature extractor and tokenizer
+feature_extractor = WhisperFeatureExtractor.from_pretrained(CFG['model'])
+tokenizer = WhisperTokenizer.from_pretrained(CFG['model'], language="Korean", task="transcribe")
+
+_, noise_array = wavfile.read(CFG["noise_file_path"])
+
+# %%
+def prepare_dataset(batch):
+    audio = batch['audio']
+    reduced_noise_audio = nr.reduce_noise(y=audio['array'], sr=CFG['sr'], y_noise = noise_array)
+
+    # raw form(reduced_noise_audio) -> log-Mel spectrogram
+    batch['input_features'] = feature_extractor(reduced_noise_audio, sampling_rate=audio['sampling_rate']).input_features[0]
+    
+    # target text -> label ids(by tokenizer)
+    batch['labels'] = tokenizer(batch['transcripts']).input_ids
+
+    return batch
+
+# %%
+from datasets import Dataset, DatasetDict
+from datasets import Audio
+
+def create_train_datasets(df, dir_name='dataset'):
+    # create dataset from csv
+    ds = Dataset.from_dict({"audio": [f'{TRAIN_PATH}/{file_path}' for file_path in df["filenames"]],
+                        "transcripts": [text for text in df["text"]]}).cast_column("audio", Audio(sampling_rate=CFG['sr']))
+
+    # train/valid split
+    train_valid = ds.train_test_split(test_size=0.2)
+    train_valid_dataset = DatasetDict({
+        "train": train_valid["train"],
+        "valid": train_valid["test"]})
+    
+    train_valid_dataset = train_valid_dataset.map(prepare_dataset, remove_columns = train_valid_dataset.column_names['train'], num_proc=4)
+
+    if not os.path.exists(dir_name):
+        os.mkdir(dir_name)
+        
+    train_valid_dataset.save_to_disk(dir_name)
+
+# %%
+# create_train_datasets(df)
+
+# create long/short train dataset from csv files
+# long_df = pd.read_csv('preprocess/long_df.csv', index_col=False)
+short_df = pd.read_csv('preprocess/short_df.csv', index_col=False)
+
+# create_train_datasets(long_df, dir_name='dataset_long')
+create_train_datasets(short_df, dir_name='dataset_short')
+
+# %% [markdown]
+# ## Test Dataset
+
+# %%
+def prepare_test_dataset(batch):
+    audio = batch['audio']
+    reduced_noise_audio = nr.reduce_noise(y=audio['array'], sr=CFG['sr'], y_noise = noise_array)
+
+    # raw form(reduced_noise_audio) -> log-Mel spectrogram
+    batch['input_features'] = feature_extractor(reduced_noise_audio, sampling_rate=audio['sampling_rate']).input_features[0]
+
+    return batch
+
+# %%
+from datasets import Dataset, DatasetDict
+from datasets import Audio
+
+def create_test_dataset(df, dir_name='dataset_test'):
+    # create dataset from csv
+    test_dataset = Dataset.from_dict({"audio": [file_path for file_path in df["path"]]})
+    test_dataset = test_dataset.cast_column("audio", Audio(sampling_rate=CFG['sr']))
+    sampling_rate = test_dataset.features['audio'].sampling_rate
+
+    # test data preprocess
+    test_dataset = test_dataset.map(prepare_test_dataset, remove_columns = test_dataset.column_names, num_proc=4)
+
+    # save test dataset
+    if not os.path.exists(dir_name):
+        os.mkdir(dir_name)
+        
+    test_dataset.save_to_disk(dir_name)
+
+# %%
+create_test_dataset(submission)
+
+
+
+
+
 
 # ## Import Modules
 
@@ -216,12 +425,13 @@ trainer = Seq2SeqTrainer(
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
 
-trainer.train()
-
-# %%
-## save checkpoint
 MODEL_PATH = 'model'
-trainer.save_model(MODEL_PATH)
+
+# TODO
+# trainer.train()
+
+
+# trainer.save_model(MODEL_PATH)
 
 # %% [markdown]
 # !pip install wandb
@@ -286,15 +496,89 @@ submission.to_csv('raw_submission.csv', index=False)
 # %%
 
 
+import pandas as pd
+import numpy as np
+import os
+import random
+import evaluate
+from tqdm import tqdm
 
-wandb.save("*.py")
-wandb.save("*.ipynb")
+# %%
+TRAIN_PATH = '/mnt/elice/dataset/train/'
+TEST_PATH = '/mnt/elice/dataset/test/'
 
-wandb.save("*.pt")
-wandb.save("*.pth")
-wandb.save("*.hdf5")
+# %%
+df = pd.read_csv(TRAIN_PATH + 'texts.csv')
+raw_submission = pd.read_csv('raw_submission.csv')
 
-wandb.save("*.csv")
-wandb.save("checkpoint/*")
+# %%
+def remove_duplicates(s):
+    l = s.split(" ")
+    while len(l) >= 2 and l[-1] == l[-2]:
+        l = l[:-1]
+    return " ".join(l)
 
-wandb.save("model/*")
+# %%
+print(remove_duplicates("같이 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진"))
+print(remove_duplicates("아 아 아 아 아"))
+
+# %%
+raw_submission["text"] = raw_submission["text"].apply(remove_duplicates)
+
+# %%
+import re
+
+def clean_text(text, remove_space=True):
+    text = re.sub(r'[!"#$%&\'()*+,-./:;<=>?@\[\]^_\`{|}~\\\\]','', text)
+    if remove_space:
+        text = ''.join(text.split())
+    return text
+
+# %%
+targets = list(map(lambda x : clean_text(x), set(df['text'].tolist()))) #train label값
+threshold = 41 # text길이
+cer_threshold = 0.7
+metric = evaluate.load('cer')
+def get_close(pred):
+    if len(pred) >= threshold:
+        return pred
+    min_cer = 1e8
+    index = -1
+    for j in range(len(targets)):
+        target = targets[j]
+        if len(target) >= threshold:
+            continue
+        if len(target) > len(pred) * 2:
+            continue
+        if len(pred) > len(target) * 1.5:
+            continue 
+        cnt = 0
+        for ch in target:
+            if ch in pred:
+                cnt += 1
+        if cnt * 2 < len(target):
+            continue
+        cer = metric.compute(predictions=[pred], references=[target])
+        if min_cer > cer:
+            min_cer = cer
+            index = j
+    if min_cer < cer_threshold:
+        pred = targets[index]
+    return pred
+
+# %%
+import swifter
+targets = list(map(lambda x : clean_text(x), set(df['text'].tolist()))) #train label값
+preds = raw_submission['text'].apply(lambda x : clean_text(x))# predict 값
+
+tqdm.pandas()
+preds = preds.swifter.progress_bar(True).apply(get_close)
+    
+    
+
+# %%
+submission = raw_submission
+submission['text'] = preds
+
+# %%
+submission.to_csv('submission.csv', index=False)
