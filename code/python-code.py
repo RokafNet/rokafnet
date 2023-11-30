@@ -37,7 +37,7 @@ TEST_PATH = '/mnt/elice/dataset/test/'
 
 # %%
 CFG = {
-    'model': 'openai/whisper-tiny',
+    'model': 'seastar105/whisper-small-ko-zeroth',
     'sr': 16000,
 }
 
@@ -162,28 +162,29 @@ model.config.suppress_tokens = []
 
 # %%
 from transformers import Seq2SeqTrainingArguments
+from transformers import AdamW, get_cosine_schedule_with_warmup
 
 training_args = Seq2SeqTrainingArguments(
     torch_compile=True, # for optimize code
 
     output_dir="checkpoint",
-    per_device_train_batch_size=16,
-    gradient_accumulation_steps=1,
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=8,
     learning_rate=1e-5,
-    warmup_steps=50,
-    num_train_epochs=5,
+    warmup_steps=500,
+    num_train_epochs=10,
 
     fp16=True,
 
     evaluation_strategy="steps",
-    eval_steps=1000,
-    per_device_eval_batch_size=16,
+    eval_steps=560,
+    per_device_eval_batch_size=4,
     predict_with_generate=True,
     generation_max_length=225,
     dataloader_num_workers=8,
     
     save_strategy='steps',
-    save_steps=1000,
+    save_steps=560,
     logging_steps=25,
     report_to=["wandb"],
     load_best_model_at_end=True,
@@ -194,6 +195,12 @@ training_args = Seq2SeqTrainingArguments(
 # %%
 from transformers import Seq2SeqTrainer
 
+optimizer = AdamW(model.parameters(), lr=1e-5)
+scheduler = get_cosine_schedule_with_warmup(optimizer = optimizer,
+                                            num_warmup_steps=500,
+                                            num_training_steps=3400)
+optimizers = (optimizer, scheduler)
+
 trainer = Seq2SeqTrainer(
     args=training_args,
     model=model,
@@ -202,6 +209,7 @@ trainer = Seq2SeqTrainer(
     data_collator=data_collator,
     compute_metrics=compute_metrics,
     tokenizer=processor.feature_extractor,
+    optimizers=optimizers,
 )
 
 # %%
@@ -247,7 +255,7 @@ test_args = Seq2SeqTrainingArguments(
 
     output_dir="repo_name",
 
-    per_device_eval_batch_size=32,
+    per_device_eval_batch_size=8,
     predict_with_generate=True,
     generation_max_length=225,
     dataloader_num_workers=8,
