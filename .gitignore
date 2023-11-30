@@ -1,0 +1,8 @@
+venv/
+noisevenv/
+*.wav
+*.arrow
+*.log
+wandb/
+*.csv
+*.json
