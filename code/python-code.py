@@ -162,7 +162,7 @@ model.config.suppress_tokens = []
 
 # %%
 from transformers import Seq2SeqTrainingArguments
-from transformers import AdamW, get_cosine_schedule_with_warmup
+from transformers import AdamW, get_cosine_with_hard_restarts_schedule_with_warmup
 
 training_args = Seq2SeqTrainingArguments(
     torch_compile=True, # for optimize code
@@ -172,7 +172,7 @@ training_args = Seq2SeqTrainingArguments(
     gradient_accumulation_steps=8,
     learning_rate=1e-5,
     warmup_steps=500,
-    num_train_epochs=10,
+    num_train_epochs=15,
 
     fp16=True,
 
@@ -196,9 +196,10 @@ training_args = Seq2SeqTrainingArguments(
 from transformers import Seq2SeqTrainer
 
 optimizer = AdamW(model.parameters(), lr=1e-5)
-scheduler = get_cosine_schedule_with_warmup(optimizer = optimizer,
+scheduler = get_cosine_with_hard_restarts_schedule_with_warmup(optimizer = optimizer,
                                             num_warmup_steps=500,
-                                            num_training_steps=3400)
+                                            num_cycles = 2,
+                                            num_training_steps=6800)
 optimizers = (optimizer, scheduler)
 
 trainer = Seq2SeqTrainer(
