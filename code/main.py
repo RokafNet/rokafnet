@@ -2,18 +2,26 @@
 # ## Import Modules
 
 # %%
-import pandas as pd
 from glob import glob
-import IPython.display as ipd
-
-# %%
+import pandas as pd
 import numpy as np
 import random
 import os
 import torch
+import wandb
 
+import IPython.display as ipd
 from scipy.io import wavfile
 import noisereduce as nr
+
+from datasets import Dataset, DatasetDict, Audio
+
+from transformers import WhisperTokenizer,  WhisperFeatureExtractor, WhisperProcessor
+
+import re
+import librosa
+from tqdm.auto import tqdm
+
 
 # %% [markdown]
 # ## Fix Seed
@@ -27,6 +35,7 @@ def seed_everything(seed: int = 42):
     torch.cuda.manual_seed(seed)  # type: ignore
     torch.backends.cudnn.deterministic = True  # type: ignore
     torch.backends.cudnn.benchmark = True  # type: ignore
+    
 seed_everything()
 
 # %% [markdown]
@@ -50,20 +59,20 @@ TEST_PATH = '/mnt/elice/dataset/test/'
 df = pd.read_csv(f'{TRAIN_PATH}/texts.csv', index_col=False)
 submission = pd.read_csv(f'sample_submission.csv', index_col=False)
 
+
 # %% [markdown]
-# ## Data Cleaning
+# ## Label Cleaning
 
 # %%
-import re
-
 def clean_text(text, remove_space=True):
     text = re.sub(r'[!"#$%&\'()*+,-./:;<=>?@\[\]^_\`{|}~\\\\]','', text)
     if remove_space:
         text = ''.join(text.split())
     return text
 
+
 # %%
-# Label Cleaning (remove punctuations)
+# label cleaning (remove punctuations)
 df['text'] = df['text'].apply(lambda x: clean_text(x, False))
 
 # remove outlier data
@@ -74,14 +83,11 @@ if not os.path.exists('preprocess'):
 
 df.to_csv('preprocess/clean_df.csv', index=False)
 
+
 # %% [markdown]
 # ## Split long/short dataframe
 
 # %%
-import librosa
-import pandas as pd
-from tqdm.auto import tqdm
-
 def split_dataframe(df, df_name, is_train=True):
     df_long = []
     df_short = []
@@ -105,6 +111,7 @@ def split_dataframe(df, df_name, is_train=True):
     df_long.to_csv(f'preprocess/long_{df_name}.csv', index=False)
     df_short.to_csv(f'preprocess/short_{df_name}.csv', index=False)
 
+
 # %%
 split_dataframe(df, 'df')
 split_dataframe(submission, 'test', False)
@@ -113,15 +120,12 @@ split_dataframe(submission, 'test', False)
 # ## Data Preprocess & Train Dataset
 
 # %%
-from transformers import WhisperTokenizer,  WhisperFeatureExtractor
-from transformers import WhisperProcessor
-from scipy.io import wavfile
-
 # load feature extractor and tokenizer
 feature_extractor = WhisperFeatureExtractor.from_pretrained(CFG['model'])
 tokenizer = WhisperTokenizer.from_pretrained(CFG['model'], language="Korean", task="transcribe")
 
 _, noise_array = wavfile.read(CFG["noise_file_path"])
+
 
 # %%
 def prepare_dataset(batch):
@@ -136,10 +140,8 @@ def prepare_dataset(batch):
 
     return batch
 
-# %%
-from datasets import Dataset, DatasetDict
-from datasets import Audio
 
+# %%
 def create_train_datasets(df, dir_name='dataset'):
     # create dataset from csv
     ds = Dataset.from_dict({"audio": [f'{TRAIN_PATH}/{file_path}' for file_path in df["filenames"]],
@@ -158,6 +160,7 @@ def create_train_datasets(df, dir_name='dataset'):
         
     train_valid_dataset.save_to_disk(dir_name)
 
+
 # %%
 # create_train_datasets(df)
 
@@ -167,6 +170,7 @@ short_df = pd.read_csv('preprocess/short_df.csv', index_col=False)
 
 # create_train_datasets(long_df, dir_name='dataset_long')
 create_train_datasets(short_df, dir_name='dataset_short')
+
 
 # %% [markdown]
 # ## Test Dataset
@@ -181,10 +185,8 @@ def prepare_test_dataset(batch):
 
     return batch
 
-# %%
-from datasets import Dataset, DatasetDict
-from datasets import Audio
 
+# %%
 def create_test_dataset(df, dir_name='dataset_test'):
     # create dataset from csv
     test_dataset = Dataset.from_dict({"audio": [file_path for file_path in df["path"]]})
@@ -200,28 +202,45 @@ def create_test_dataset(df, dir_name='dataset_test'):
         
     test_dataset.save_to_disk(dir_name)
 
+
 # %%
 create_test_dataset(submission)
 
+# create long/short test dataset from csv files
+# long_test = pd.read_csv('preprocess/long_test.csv', index_col=False)
+# short_test = pd.read_csv('preprocess/short_test.csv', index_col=False)
 
+# create_test_dataset(long_test, dir_name='dataset_long_test')
+# create_test_dataset(short_test, dir_name='dataset_short_test')
 
-
-
-
+# %% [markdown]
 # ## Import Modules
 
 # %%
-import pandas as pd
 from glob import glob
-import IPython.display as ipd
-
-# %%
+import pandas as pd
 import numpy as np
 import random
 import os
 import torch
+import wandb
 
+import IPython.display as ipd
 from scipy.io import wavfile
+
+from datasets import load_from_disk
+from dataclasses import dataclass
+from typing import Any, Dict, List, Union
+
+from transformers import WhisperTokenizer,  WhisperFeatureExtractor, WhisperProcessor
+from transformers import WhisperForConditionalGeneration
+from transformers import Seq2SeqTrainingArguments
+from transformers import AdamW, get_cosine_schedule_with_warmup
+from transformers import Seq2SeqTrainer
+
+import evaluate
+import re
+
 
 # %% [markdown]
 # ## Fix Seed
@@ -246,37 +265,22 @@ TEST_PATH = '/mnt/elice/dataset/test/'
 
 # %%
 CFG = {
-    'model': 'seastar105/whisper-small-ko-zeroth',
+    'model': 'openai/whisper-tiny',
     'sr': 16000,
 }
-
-# %% [markdown]
-# preprocess - read files 삽입 자리
-
-# %% [markdown]
-# preprocess - data cleaning 삽입 자리
-
-# %% [markdown]
-# preprocess - Data Preprocess & Train Dataset 삽입 자리
-
-# %% [markdown]
-# preprocess - Test Dataset 삽입 자리
 
 # %% [markdown]
 # ## Training
 
 # %%
-from datasets import load_from_disk
+# Load train dataset created by preprocess notebook
 train_valid_dataset = load_from_disk('dataset_short')
+
 
 # %% [markdown]
 # ### Data Collator
 
 # %%
-import torch
-from dataclasses import dataclass
-from typing import Any, Dict, List, Union
-
 @dataclass
 class DataCollatorSpeechSeq2SeqWithPadding:
     processor: Any
@@ -304,11 +308,9 @@ class DataCollatorSpeechSeq2SeqWithPadding:
 
         return batch
 
-# %%
-from transformers import WhisperTokenizer,  WhisperFeatureExtractor
-from transformers import WhisperProcessor
 
-# 훈련시킬 모델의 processor, tokenizer, feature extractor 로드
+# %%
+# processor, tokenizer, feature extractor 로드
 processor = WhisperProcessor.from_pretrained(CFG['model'], language="Korean", task="transcribe")
 tokenizer = WhisperTokenizer.from_pretrained(CFG['model'], language="Korean", task="transcribe")
 feature_extractor = WhisperFeatureExtractor.from_pretrained(CFG['model'])
@@ -321,18 +323,16 @@ data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
 # ### Evaluation Metrics
 
 # %%
-import evaluate
-
 metric = evaluate.load('cer')
 
-# %%
-import re
 
+# %%
 def clean_text(text, remove_space=True):
     text = re.sub(r'[!"#$%&\'()*+,-./:;<=>?@\[\]^_\`{|}~\\\\]','', text)
     if remove_space:
         text = ''.join(text.split())
     return text
+
 
 # %%
 def compute_metrics(pred):
@@ -354,15 +354,15 @@ def compute_metrics(pred):
     
     return {"cer": cer}
 
+
 # %% [markdown]
-# ### Pretrained Checkpoint
+# ### Load Pretrained Checkpoint
 
 # %%
-from transformers import WhisperForConditionalGeneration
-
 model = WhisperForConditionalGeneration.from_pretrained(CFG['model'])
 
 # %%
+# restrict prediction language to korean
 model.config.forced_decoder_ids = processor.get_decoder_prompt_ids(language='korean', task='transcribe')
 model.config.suppress_tokens = []
 
@@ -370,9 +370,6 @@ model.config.suppress_tokens = []
 # ### Training
 
 # %%
-from transformers import Seq2SeqTrainingArguments
-from transformers import AdamW, get_cosine_schedule_with_warmup
-
 training_args = Seq2SeqTrainingArguments(
     torch_compile=True, # for optimize code
 
@@ -382,6 +379,7 @@ training_args = Seq2SeqTrainingArguments(
     learning_rate=1e-5,
     warmup_steps=500,
     num_train_epochs=10,
+    optimizers=(AdamW, get_cosine_schedule_with_warmup),
 
     fp16=True,
 
@@ -402,14 +400,6 @@ training_args = Seq2SeqTrainingArguments(
 )
 
 # %%
-from transformers import Seq2SeqTrainer
-
-optimizer = AdamW(model.parameters(), lr=1e-5)
-scheduler = get_cosine_schedule_with_warmup(optimizer = optimizer,
-                                            num_warmup_steps=500,
-                                            num_training_steps=3400)
-optimizers = (optimizer, scheduler)
-
 trainer = Seq2SeqTrainer(
     args=training_args,
     model=model,
@@ -418,45 +408,39 @@ trainer = Seq2SeqTrainer(
     data_collator=data_collator,
     compute_metrics=compute_metrics,
     tokenizer=processor.feature_extractor,
-    optimizers=optimizers,
 )
 
 # %%
-import torch._dynamo
-torch._dynamo.config.suppress_errors = True
-
-MODEL_PATH = 'model'
-
 trainer.train()
 
-
+# %%
+## save checkpoint
+MODEL_PATH = 'model'
 trainer.save_model(MODEL_PATH)
 
-# %% [markdown]
-# !pip install wandb
-
 # %%
-import wandb
-
 # set wandb to save all codes, weights, and results
+wandb.save("*.py")
+wandb.save("*.ipynb")
 
+wandb.save("*.pt")
+wandb.save("*.pth")
+wandb.save("*.hdf5")
+
+wandb.save("*.csv")
 
 # %% [markdown]
 # ## Predict
 
-# %% [markdown]
-# preprocess - Test Dataset 삽입 자리
-
 # %%
-model = WhisperForConditionalGeneration.from_pretrained(MODEL_PATH)
-
-# %%
+# restrict prediction language to korean
 model.config.forced_decoder_ids = processor.get_decoder_prompt_ids(language='korean', task='transcribe')
 model.config.suppress_tokens = []
 
 # %%
-# load test dataset from local storage
+# load test dataset created by preprocess notebook
 test_dataset = load_from_disk('dataset_test')
+len(test_dataset)
 
 # %%
 test_args = Seq2SeqTrainingArguments(
@@ -464,7 +448,7 @@ test_args = Seq2SeqTrainingArguments(
 
     output_dir="repo_name",
 
-    per_device_eval_batch_size=8,
+    per_device_eval_batch_size=32,
     predict_with_generate=True,
     generation_max_length=225,
     dataloader_num_workers=8,
@@ -474,8 +458,6 @@ test_args = Seq2SeqTrainingArguments(
 )
 
 # %%
-from transformers import pipeline
-
 # inference
 test_trainer = Seq2SeqTrainer(args=test_args,
                               model=model)
@@ -492,15 +474,28 @@ submission = pd.read_csv('sample_submission.csv')
 submission['text'] = text
 submission.to_csv('raw_submission.csv', index=False)
 
+# %% [markdown]
+# ## Install Modules
+
 # %%
+# # %pip install evaluate
+# # %pip install swifter
 
+# %% [markdown]
+# ## Import Modules
 
+# %%
 import pandas as pd
 import numpy as np
 import os
 import random
 import evaluate
 from tqdm import tqdm
+import re
+import swifter
+
+# %% [markdown]
+# ## Load Raw Submission
 
 # %%
 TRAIN_PATH = '/mnt/elice/dataset/train/'
@@ -510,6 +505,10 @@ TEST_PATH = '/mnt/elice/dataset/test/'
 df = pd.read_csv(TRAIN_PATH + 'texts.csv')
 raw_submission = pd.read_csv('raw_submission.csv')
 
+
+# %% [markdown]
+# ## Remove Duplicates
+
 # %%
 def remove_duplicates(s):
     l = s.split(" ")
@@ -517,27 +516,28 @@ def remove_duplicates(s):
         l = l[:-1]
     return " ".join(l)
 
-# %%
-print(remove_duplicates("같이 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진 사진"))
-print(remove_duplicates("아 아 아 아 아"))
 
 # %%
 raw_submission["text"] = raw_submission["text"].apply(remove_duplicates)
 
-# %%
-import re
 
+# %% [markdown]
+# ## Proofreading with train labels
+
+# %%
 def clean_text(text, remove_space=True):
     text = re.sub(r'[!"#$%&\'()*+,-./:;<=>?@\[\]^_\`{|}~\\\\]','', text)
     if remove_space:
         text = ''.join(text.split())
     return text
 
+
 # %%
-targets = list(map(lambda x : clean_text(x), set(df['text'].tolist()))) #train label값
+targets = list(map(lambda x : clean_text(x), set(df['text'].tolist()))) # train label값
 threshold = 41 # text길이
-cer_threshold = 0.7
+cer_threshold = 0.5
 metric = evaluate.load('cer')
+
 def get_close(pred):
     if len(pred) >= threshold:
         return pred
@@ -565,19 +565,18 @@ def get_close(pred):
         pred = targets[index]
     return pred
 
+
 # %%
-import swifter
 targets = list(map(lambda x : clean_text(x), set(df['text'].tolist()))) #train label값
 preds = raw_submission['text'].apply(lambda x : clean_text(x))# predict 값
 
 tqdm.pandas()
-preds = preds.swifter.progress_bar(True).apply(get_close)
-    
-    
+preds = preds.swifter.progress_bar(True).allow_dask_on_strings(enable=True).apply(get_close)
+
+# %% [markdown]
+# ## Export processed Submission
 
 # %%
 submission = raw_submission
 submission['text'] = preds
-
-# %%
 submission.to_csv('submission.csv', index=False)
