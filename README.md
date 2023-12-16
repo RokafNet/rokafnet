@@ -16,6 +16,9 @@
 - 이민준: EDA, 모델/논문 검색, 환경 설정, 실험 관리
   
 ## 모델 설명
+### Overview
+ASR 분야 SOTA 모델이며, 한국어에 대한 성능이 뛰어나고 소음에 robust한 특성을 갖는 whisper를 모델로 선정하였다. 큰 소리의 인위적 소음이 합성된 data 특성에 주목하여, 전처리 과정에서는 train data의 noise를 활용한 denoising을 수행했다. 후처리 시에는 맞춤법 교정에 초점을 맞췄는데, 이때는 data의 label 종류가 한정적임을 적극적으로 활용하여 시간을 줄이고 CER을 0.1 가량 향상시켰다.
+
 ### Baseline
 [seastar105/whisper-small-ko-zeroth](https://huggingface.co/seastar105/whisper-small-ko-zeroth)
 - parameters: 244M
