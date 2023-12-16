@@ -427,11 +427,10 @@ torch._dynamo.config.suppress_errors = True
 
 MODEL_PATH = 'model'
 
-# TODO
-# trainer.train()
+trainer.train()
 
 
-# trainer.save_model(MODEL_PATH)
+trainer.save_model(MODEL_PATH)
 
 # %% [markdown]
 # !pip install wandb
