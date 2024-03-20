@@ -46,7 +46,9 @@ ASR 분야 SOTA 모델이며, 한국어에 대한 성능이 뛰어나고 소음�
 
 ### LB Score
 - Public: **0.8661**(1st)
+![image](https://github.com/RokafNet/rokafnet/assets/78327074/87a1bcd1-8b35-4997-81f7-6b0bfda7b82c)
 - Private: **0.8636**(2nd)
+![image](https://github.com/RokafNet/rokafnet/assets/78327074/41c23b43-67ec-4763-8162-972082fa9dec)
 
 [실험관리 페이지(Notion)](https://www.notion.so/f85c0389cb8e40b89bb4ac0c8c088c78)
 
